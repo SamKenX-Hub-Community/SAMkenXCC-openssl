@@ -56,6 +56,7 @@ fn main() {
         .header("openssl/bio.h")
         .header("openssl/x509v3.h")
         .header("openssl/safestack.h")
+        .header("openssl/cmac.h")
         .header("openssl/hmac.h")
         .header("openssl/obj_mac.h")
         .header("openssl/ssl.h")
@@ -67,6 +68,10 @@ fn main() {
         .header("openssl/ocsp.h")
         .header("openssl/evp.h")
         .header("openssl/x509_vfy.h");
+
+    if libressl_version.is_some() {
+        cfg.header("openssl/poly1305.h");
+    }
 
     if let Some(version) = openssl_version {
         cfg.header("openssl/cms.h");

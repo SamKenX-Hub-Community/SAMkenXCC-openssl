@@ -120,10 +120,27 @@ impl X509VerifyParamRef {
     #[corresponds(X509_VERIFY_PARAM_set1_host)]
     pub fn set_host(&mut self, host: &str) -> Result<(), ErrorStack> {
         unsafe {
+            // len == 0 means "run strlen" :(
+            let raw_host = if host.is_empty() { "\0" } else { host };
             cvt(ffi::X509_VERIFY_PARAM_set1_host(
                 self.as_ptr(),
-                host.as_ptr() as *const _,
+                raw_host.as_ptr() as *const _,
                 host.len(),
+            ))
+            .map(|_| ())
+        }
+    }
+
+    /// Set the expected email address.
+    #[corresponds(X509_VERIFY_PARAM_set1_email)]
+    pub fn set_email(&mut self, email: &str) -> Result<(), ErrorStack> {
+        unsafe {
+            // len == 0 means "run strlen" :(
+            let raw_email = if email.is_empty() { "\0" } else { email };
+            cvt(ffi::X509_VERIFY_PARAM_set1_email(
+                self.as_ptr(),
+                raw_email.as_ptr() as *const _,
+                email.len(),
             ))
             .map(|_| ())
         }

@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::asn1::Asn1Time;
+use crate::asn1::{Asn1Object, Asn1OctetString, Asn1Time};
 use crate::bn::{BigNum, MsbOption};
 use crate::hash::MessageDigest;
 use crate::nid::Nid;
@@ -27,6 +27,9 @@ use crate::x509::{CrlReason, X509Builder};
 use crate::x509::{
     CrlStatus, X509Crl, X509Extension, X509Name, X509Req, X509StoreContext, X509VerifyResult, X509,
 };
+
+#[cfg(ossl110)]
+use foreign_types::ForeignType;
 use hex::{self, FromHex};
 #[cfg(any(ossl102, libressl261))]
 use libc::time_t;
@@ -169,6 +172,70 @@ fn test_subject_alt_name() {
 }
 
 #[test]
+#[cfg(ossl110)]
+fn test_retrieve_pathlen() {
+    let cert = include_bytes!("../../test/root-ca.pem");
+    let cert = X509::from_pem(cert).unwrap();
+    assert_eq!(cert.pathlen(), None);
+
+    let cert = include_bytes!("../../test/intermediate-ca.pem");
+    let cert = X509::from_pem(cert).unwrap();
+    assert_eq!(cert.pathlen(), Some(0));
+
+    let cert = include_bytes!("../../test/alt_name_cert.pem");
+    let cert = X509::from_pem(cert).unwrap();
+    assert_eq!(cert.pathlen(), None);
+}
+
+#[test]
+#[cfg(ossl110)]
+fn test_subject_key_id() {
+    let cert = include_bytes!("../../test/certv3.pem");
+    let cert = X509::from_pem(cert).unwrap();
+
+    let subject_key_id = cert.subject_key_id().unwrap();
+    assert_eq!(
+        subject_key_id.as_slice(),
+        &b"\xB6\x73\x2F\x61\xA5\x4B\xA1\xEF\x48\x2C\x15\xB1\x9F\xF3\xDC\x34\x2F\xBC\xAC\x30"[..]
+    );
+}
+
+#[test]
+#[cfg(ossl110)]
+fn test_authority_key_id() {
+    let cert = include_bytes!("../../test/certv3.pem");
+    let cert = X509::from_pem(cert).unwrap();
+
+    let authority_key_id = cert.authority_key_id().unwrap();
+    assert_eq!(
+        authority_key_id.as_slice(),
+        &b"\x6C\xD3\xA5\x03\xAB\x0D\x5F\x2C\xC9\x8D\x8A\x9C\x88\xA7\x88\x77\xB8\x37\xFD\x9A"[..]
+    );
+}
+
+#[test]
+#[cfg(ossl111d)]
+fn test_authority_issuer_and_serial() {
+    let cert = include_bytes!("../../test/authority_key_identifier.pem");
+    let cert = X509::from_pem(cert).unwrap();
+
+    let authority_issuer = cert.authority_issuer().unwrap();
+    assert_eq!(1, authority_issuer.len());
+    let dn = authority_issuer[0].directory_name().unwrap();
+    let mut o = dn.entries_by_nid(Nid::ORGANIZATIONNAME);
+    let o = o.next().unwrap().data().as_utf8().unwrap();
+    assert_eq!(o.as_bytes(), b"PyCA");
+    let mut cn = dn.entries_by_nid(Nid::COMMONNAME);
+    let cn = cn.next().unwrap().data().as_utf8().unwrap();
+    assert_eq!(cn.as_bytes(), b"cryptography.io");
+
+    let authority_serial = cert.authority_serial().unwrap();
+    let serial = authority_serial.to_bn().unwrap();
+    let expected = BigNum::from_u32(3).unwrap();
+    assert_eq!(serial, expected);
+}
+
+#[test]
 fn test_subject_alt_name_iter() {
     let cert = include_bytes!("../../test/alt_name_cert.pem");
     let cert = X509::from_pem(cert).unwrap();
@@ -290,11 +357,27 @@ fn x509_builder() {
 }
 
 #[test]
+// This tests `X509Extension::new`, even though its deprecated.
+#[allow(deprecated)]
 fn x509_extension_new() {
     assert!(X509Extension::new(None, None, "crlDistributionPoints", "section").is_err());
     assert!(X509Extension::new(None, None, "proxyCertInfo", "").is_err());
     assert!(X509Extension::new(None, None, "certificatePolicies", "").is_err());
     assert!(X509Extension::new(None, None, "subjectAltName", "dirName:section").is_err());
+}
+
+#[test]
+fn x509_extension_new_from_der() {
+    let ext = X509Extension::new_from_der(
+        &Asn1Object::from_str("2.5.29.19").unwrap(),
+        true,
+        &Asn1OctetString::new_from_bytes(b"\x30\x03\x01\x01\xff").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        ext.to_der().unwrap(),
+        b"0\x0f\x06\x03U\x1d\x13\x01\x01\xff\x04\x050\x03\x01\x01\xff"
+    );
 }
 
 #[test]
@@ -1023,6 +1106,31 @@ fn ipv6_as_subject_alternative_name_is_formatted_in_debug() {
     ipaddress_as_subject_alternative_name_is_formatted_in_debug([
         8u8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 128,
     ]);
+}
+
+#[cfg(ossl110)]
+#[test]
+fn other_name_as_subject_alternative_name() {
+    let oid = Asn1Object::from_str("1.3.6.1.5.5.7.8.11").unwrap();
+    // this is the hex representation of "test" encoded as a ia5string
+    let content = [0x16, 0x04, 0x74, 0x65, 0x73, 0x74];
+
+    let mut builder = X509Builder::new().unwrap();
+    let san = SubjectAlternativeName::new()
+        .other_name2(oid, &content)
+        .build(&builder.x509v3_context(None, None))
+        .unwrap();
+    builder.append_extension(san).unwrap();
+    let cert = builder.build();
+    let general_name = cert
+        .subject_alt_names()
+        .into_iter()
+        .flatten()
+        .next()
+        .unwrap();
+    unsafe {
+        assert_eq!((*general_name.as_ptr()).type_, 0);
+    }
 }
 
 #[test]

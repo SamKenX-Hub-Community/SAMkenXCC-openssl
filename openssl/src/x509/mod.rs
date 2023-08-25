@@ -24,8 +24,8 @@ use std::slice;
 use std::str;
 
 use crate::asn1::{
-    Asn1BitStringRef, Asn1Enumerated, Asn1IntegerRef, Asn1Object, Asn1ObjectRef, Asn1StringRef,
-    Asn1TimeRef, Asn1Type,
+    Asn1BitStringRef, Asn1Enumerated, Asn1IntegerRef, Asn1Object, Asn1ObjectRef,
+    Asn1OctetStringRef, Asn1StringRef, Asn1TimeRef, Asn1Type,
 };
 use crate::bio::MemBioSlice;
 use crate::conf::ConfRef;
@@ -483,6 +483,54 @@ impl X509Ref {
         }
     }
 
+    /// Retrieves the path length extension from a certificate, if it exists.
+    #[corresponds(X509_get_pathlen)]
+    #[cfg(ossl110)]
+    pub fn pathlen(&self) -> Option<u32> {
+        let v = unsafe { ffi::X509_get_pathlen(self.as_ptr()) };
+        u32::try_from(v).ok()
+    }
+
+    /// Returns this certificate's subject key id, if it exists.
+    #[corresponds(X509_get0_subject_key_id)]
+    #[cfg(ossl110)]
+    pub fn subject_key_id(&self) -> Option<&Asn1OctetStringRef> {
+        unsafe {
+            let data = ffi::X509_get0_subject_key_id(self.as_ptr());
+            Asn1OctetStringRef::from_const_ptr_opt(data)
+        }
+    }
+
+    /// Returns this certificate's authority key id, if it exists.
+    #[corresponds(X509_get0_authority_key_id)]
+    #[cfg(ossl110)]
+    pub fn authority_key_id(&self) -> Option<&Asn1OctetStringRef> {
+        unsafe {
+            let data = ffi::X509_get0_authority_key_id(self.as_ptr());
+            Asn1OctetStringRef::from_const_ptr_opt(data)
+        }
+    }
+
+    /// Returns this certificate's authority issuer name entries, if they exist.
+    #[corresponds(X509_get0_authority_issuer)]
+    #[cfg(ossl111d)]
+    pub fn authority_issuer(&self) -> Option<&StackRef<GeneralName>> {
+        unsafe {
+            let stack = ffi::X509_get0_authority_issuer(self.as_ptr());
+            StackRef::from_const_ptr_opt(stack)
+        }
+    }
+
+    /// Returns this certificate's authority serial number, if it exists.
+    #[corresponds(X509_get0_authority_serial)]
+    #[cfg(ossl111d)]
+    pub fn authority_serial(&self) -> Option<&Asn1IntegerRef> {
+        unsafe {
+            let r = ffi::X509_get0_authority_serial(self.as_ptr());
+            Asn1IntegerRef::from_const_ptr_opt(r)
+        }
+    }
+
     #[corresponds(X509_get_pubkey)]
     pub fn public_key(&self) -> Result<PKey<Public>, ErrorStack> {
         unsafe {
@@ -842,6 +890,13 @@ impl X509Extension {
     /// mini-language that can read arbitrary files.
     ///
     /// See the extension module for builder types which will construct certain common extensions.
+    ///
+    /// This function is deprecated, `X509Extension::new_from_der` or the
+    /// types in `x509::extension` should be used in its place.
+    #[deprecated(
+        note = "Use x509::extension types or new_from_der instead",
+        since = "0.10.51"
+    )]
     pub fn new(
         conf: Option<&ConfRef>,
         context: Option<&X509v3Context<'_>>,
@@ -887,6 +942,13 @@ impl X509Extension {
     /// mini-language that can read arbitrary files.
     ///
     /// See the extension module for builder types which will construct certain common extensions.
+    ///
+    /// This function is deprecated, `X509Extension::new_from_der` or the
+    /// types in `x509::extension` should be used in its place.
+    #[deprecated(
+        note = "Use x509::extension types or new_from_der instead",
+        since = "0.10.51"
+    )]
     pub fn new_nid(
         conf: Option<&ConfRef>,
         context: Option<&X509v3Context<'_>>,
@@ -921,6 +983,31 @@ impl X509Extension {
         }
     }
 
+    /// Constructs a new X509 extension value from its OID, whether it's
+    /// critical, and its DER contents.
+    ///
+    /// The extent structure of the DER value will vary based on the
+    /// extension type, and can generally be found in the RFC defining the
+    /// extension.
+    ///
+    /// For common extension types, there are Rust APIs provided in
+    /// `openssl::x509::extensions` which are more ergonomic.
+    pub fn new_from_der(
+        oid: &Asn1ObjectRef,
+        critical: bool,
+        der_contents: &Asn1OctetStringRef,
+    ) -> Result<X509Extension, ErrorStack> {
+        unsafe {
+            cvt_p(ffi::X509_EXTENSION_create_by_OBJ(
+                ptr::null_mut(),
+                oid.as_ptr(),
+                critical as _,
+                der_contents.as_ptr(),
+            ))
+            .map(X509Extension)
+        }
+    }
+
     pub(crate) unsafe fn new_internal(
         nid: Nid,
         critical: bool,
@@ -936,6 +1023,10 @@ impl X509Extension {
     ///
     /// This method modifies global state without locking and therefore is not thread safe
     #[corresponds(X509V3_EXT_add_alias)]
+    #[deprecated(
+        note = "Use x509::extension types or new_from_der and then this is not necessary",
+        since = "0.10.51"
+    )]
     pub unsafe fn add_alias(to: Nid, from: Nid) -> Result<(), ErrorStack> {
         ffi::init();
         cvt(ffi::X509V3_EXT_add_alias(to.as_raw(), from.as_raw())).map(|_| ())
@@ -986,13 +1077,13 @@ impl X509NameBuilder {
     pub fn append_entry_by_text(&mut self, field: &str, value: &str) -> Result<(), ErrorStack> {
         unsafe {
             let field = CString::new(field).unwrap();
-            assert!(value.len() <= c_int::max_value() as usize);
+            assert!(value.len() <= crate::SLenType::max_value() as usize);
             cvt(ffi::X509_NAME_add_entry_by_txt(
                 self.0.as_ptr(),
                 field.as_ptr() as *mut _,
                 ffi::MBSTRING_UTF8,
                 value.as_ptr(),
-                value.len() as c_int,
+                value.len() as crate::SLenType,
                 -1,
                 0,
             ))
@@ -1013,13 +1104,13 @@ impl X509NameBuilder {
     ) -> Result<(), ErrorStack> {
         unsafe {
             let field = CString::new(field).unwrap();
-            assert!(value.len() <= c_int::max_value() as usize);
+            assert!(value.len() <= crate::SLenType::max_value() as usize);
             cvt(ffi::X509_NAME_add_entry_by_txt(
                 self.0.as_ptr(),
                 field.as_ptr() as *mut _,
                 ty.as_raw(),
                 value.as_ptr(),
-                value.len() as c_int,
+                value.len() as crate::SLenType,
                 -1,
                 0,
             ))
@@ -1034,13 +1125,13 @@ impl X509NameBuilder {
     /// [`X509_NAME_add_entry_by_NID`]: https://www.openssl.org/docs/manmaster/crypto/X509_NAME_add_entry_by_NID.html
     pub fn append_entry_by_nid(&mut self, field: Nid, value: &str) -> Result<(), ErrorStack> {
         unsafe {
-            assert!(value.len() <= c_int::max_value() as usize);
+            assert!(value.len() <= crate::SLenType::max_value() as usize);
             cvt(ffi::X509_NAME_add_entry_by_NID(
                 self.0.as_ptr(),
                 field.as_raw(),
                 ffi::MBSTRING_UTF8,
                 value.as_ptr() as *mut _,
-                value.len() as c_int,
+                value.len() as crate::SLenType,
                 -1,
                 0,
             ))
@@ -1060,13 +1151,13 @@ impl X509NameBuilder {
         ty: Asn1Type,
     ) -> Result<(), ErrorStack> {
         unsafe {
-            assert!(value.len() <= c_int::max_value() as usize);
+            assert!(value.len() <= crate::SLenType::max_value() as usize);
             cvt(ffi::X509_NAME_add_entry_by_NID(
                 self.0.as_ptr(),
                 field.as_raw(),
                 ty.as_raw(),
                 value.as_ptr() as *mut _,
-                value.len() as c_int,
+                value.len() as crate::SLenType,
                 -1,
                 0,
             ))
@@ -1545,9 +1636,9 @@ foreign_type_and_impl_send_sync! {
     type CType = ffi::X509_REVOKED;
     fn drop = ffi::X509_REVOKED_free;
 
-    /// An `X509` certificate request.
+    /// An `X509` certificate revocation status.
     pub struct X509Revoked;
-    /// Reference to `X509Crl`.
+    /// Reference to `X509Revoked`.
     pub struct X509RevokedRef;
 }
 
@@ -1659,7 +1750,7 @@ foreign_type_and_impl_send_sync! {
     type CType = ffi::X509_CRL;
     fn drop = ffi::X509_CRL_free;
 
-    /// An `X509` certificate request.
+    /// An `X509` certificate revocation list.
     pub struct X509Crl;
     /// Reference to `X509Crl`.
     pub struct X509CrlRef;
@@ -1956,6 +2047,37 @@ impl GeneralName {
             #[cfg(not(boringssl))]
             {
                 (*gn).d = oid.as_ptr().cast();
+            }
+
+            mem::forget(oid);
+
+            Ok(GeneralName::from_ptr(gn))
+        }
+    }
+
+    pub(crate) fn new_other_name(
+        oid: Asn1Object,
+        value: &Vec<u8>,
+    ) -> Result<GeneralName, ErrorStack> {
+        unsafe {
+            ffi::init();
+
+            let typ = cvt_p(ffi::d2i_ASN1_TYPE(
+                ptr::null_mut(),
+                &mut value.as_ptr().cast(),
+                value.len().try_into().unwrap(),
+            ))?;
+
+            let gn = cvt_p(ffi::GENERAL_NAME_new())?;
+            (*gn).type_ = ffi::GEN_OTHERNAME;
+
+            if let Err(e) = cvt(ffi::GENERAL_NAME_set0_othername(
+                gn,
+                oid.as_ptr().cast(),
+                typ,
+            )) {
+                ffi::GENERAL_NAME_free(gn);
+                return Err(e);
             }
 
             mem::forget(oid);
